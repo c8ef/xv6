@@ -92,3 +92,25 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64 sys_sigalarm(void) {
+  int ticks;
+  uint64 handler;
+
+  argint(0, &ticks);
+  argaddr(1, &handler);
+  myproc()->interval = ticks;
+  myproc()->handler = handler;
+
+  return 0;
+}
+
+uint64 sys_sigreturn(void) {
+  myproc()->timestamp = 0;
+  myproc()->context = myproc()->alacontext;
+  myproc()->pagetable = myproc()->alapgtbl;
+
+  *(myproc()->trapframe) = myproc()->alatrap;
+  myproc()->trapframe->epc = myproc()->retpc;
+  return myproc()->alatrap.a0;
+}

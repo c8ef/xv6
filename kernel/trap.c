@@ -76,6 +76,17 @@ usertrap(void)
   if(killed(p))
     exit(-1);
 
+  if (which_dev == 2) {
+    p->timestamp++;
+    if (p->interval > 0 && p->timestamp == p->interval) {
+      p->retpc = p->trapframe->epc;
+      p->trapframe->epc = p->handler;
+      p->alacontext = p->context;
+      p->alapgtbl = p->pagetable;
+      p->alatrap = *p->trapframe;
+    }
+  }
+
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
