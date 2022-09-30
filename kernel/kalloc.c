@@ -13,6 +13,31 @@ void freerange(void *pa_start, void *pa_end);
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+static int prc[PGS];
+
+int rc_inc(uint64 pa) {
+  uint64 pg = (pa - KERNBASE) / PGSIZE;
+  if (pg >= 0) {
+    prc[pg]++;
+    return prc[pg];
+  }
+  return 0;
+}
+
+int rc_dec(uint64 pa) {
+  uint64 pg = (pa - KERNBASE) / PGSIZE;
+  if (pg >= 0) {
+    prc[pg]--;
+    return prc[pg];
+  }
+  return 0;
+}
+
+void rc_set(uint64 pa, int rc) {
+  uint64 pg = (pa - KERNBASE) / PGSIZE;
+  if (pg >= 0)
+    prc[pg] = rc;
+}
 
 struct run {
   struct run *next;
@@ -27,6 +52,9 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  for (int i = 0; i < NELEM(prc); ++i) {
+    prc[i] = 0;
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -51,6 +79,8 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  if (rc_dec((uint64)pa) > 0)
+    return;
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -76,7 +106,9 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  if (r) {
+    memset((char *)r, 5, PGSIZE); // fill with junk
+    rc_set((uint64)r, 1);
+  }
   return (void*)r;
 }
