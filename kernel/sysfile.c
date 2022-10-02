@@ -484,3 +484,149 @@ sys_pipe(void)
   }
   return 0;
 }
+
+struct vma vmas[VMASZ];
+
+// mmap `len` size from `addr`
+int mmap(struct proc *p, uint64 addr, uint64 len) {
+  for (uint64 a = addr; a < addr + len; a += PGSIZE) {
+    char *mem = kalloc();
+    if (!mem) {
+      uvmdealloc(p->pagetable, a, addr);
+      return -1;
+    }
+    memset(mem, 0, PGSIZE);
+
+    if (mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_U) < 0) {
+      kfree(mem);
+      uvmdealloc(p->pagetable, a, addr);
+      return -1;
+    }
+    p->sz += PGSIZE;
+  }
+  return 0;
+}
+
+// assume addr is NULL
+// assume offset is 0
+uint64 sys_mmap(void) {
+  uint64 len, addr;
+  int prot, flags, fd;
+  struct proc *p;
+
+  if (argaddr(1, &len) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+      argint(4, &fd) < 0)
+    return -1;
+
+  for (int i = 0; i < VMASZ; ++i) {
+    if (vmas[i].p == 0) {
+      p = myproc();
+      if ((prot & PROT_WRITE) && (flags & MAP_SHARED) &&
+          !(p->ofile[fd]->writable))
+        return -1;
+
+      addr = PGROUNDUP(p->sz);
+      if (mmap(p, addr, len) < 0)
+        return -1;
+
+      vmas[i].addr = addr;
+      vmas[i].len = len;
+      vmas[i].prot = prot;
+      vmas[i].flags = flags;
+      vmas[i].p = p;
+      vmas[i].f = p->ofile[fd];
+      // only write will change its file offset
+      vmas[i].f->off = 0;
+      // the structure doesn't disappear when the file is closed
+      filedup(vmas[i].f);
+      return addr;
+    }
+  }
+  panic("mmap");
+}
+
+int mmapintr(struct proc *p, uint64 addr) {
+  struct vma *v;
+  pte_t *pte;
+  int readnum;
+  int i;
+  for (i = 0; i < VMASZ; ++i) {
+    if (vmas[i].p == p) {
+      v = vmas + i;
+      if (addr < v->addr || addr >= v->addr + v->len)
+        continue;
+
+      if ((pte = walk(p->pagetable, addr, 0)) == 0 || (*pte & PTE_V) == 0)
+        panic("mmapintr");
+
+      ilock(v->f->ip);
+      readi(v->f->ip, 0, PTE2PA(*pte), addr - v->addr, PGSIZE);
+      iunlock(v->f->ip);
+
+      *pte |= (v->prot << 1);
+      return 0;
+    }
+  }
+  return -1;
+}
+
+// mostly steal from filewrite in file.c
+int writevma(struct vma *v, uint64 addr) {
+  int max = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+  int i = 0, r;
+  while (i < PGSIZE) {
+    int n1 = PGSIZE - i;
+    if (n1 > max)
+      n1 = max;
+
+    begin_op();
+    ilock(v->f->ip);
+    if ((r = writei(v->f->ip, 1, addr + i, v->f->off, n1)) > 0)
+      v->f->off += r;
+    iunlock(v->f->ip);
+    end_op();
+
+    if (r != n1) {
+      // error from writei
+      return -1;
+    }
+    i += r;
+  }
+  return 0;
+}
+
+uint64 sys_munmap(void) {
+  uint64 addr, len;
+  struct proc *p;
+  struct vma *v;
+  pte_t *pte;
+
+  if (argaddr(0, &addr) < 0 || argaddr(1, &len) < 0)
+    return -1;
+
+  p = myproc();
+  for (int i = 0; i < VMASZ; ++i) {
+    if (vmas[i].p && vmas[i].p->pid == p->pid) {
+      v = vmas + i;
+      break;
+    }
+  }
+  if (addr < v->addr && addr >= v->addr + v->len)
+    return -1;
+
+  if (v->flags & MAP_SHARED) {
+    for (uint64 a = addr; a < addr + len; a += PGSIZE) {
+      if ((pte = walk(p->pagetable, a, 0)) == 0 || (*pte & PTE_V) == 0)
+        panic("munmap");
+      if (*pte & PTE_D)
+        writevma(v, a);
+    }
+  }
+  v->addr = addr + len;
+  v->len -= len;
+  if (v->len <= 0) {
+    fileclose(v->f);
+    memset(v, 0, sizeof(*v));
+  }
+  return 0;
+}

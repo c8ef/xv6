@@ -20,6 +20,8 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern struct vma vmas[VMASZ];
+
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
 // memory model when using p->parent.
@@ -281,6 +283,27 @@ fork(void)
     return -1;
   }
 
+  for (int i = 0; i < VMASZ; ++i) {
+    if (vmas[i].p != 0 && vmas[i].p->pid == p->pid) {
+      struct vma *nv = 0, v = vmas[i];
+      for (int i = 0; i < VMASZ; ++i) {
+        if (vmas[i].p == 0) {
+          nv = vmas + i;
+          break;
+        }
+      }
+      if (nv == 0)
+        panic("fork: no space for vma");
+      nv->addr = v.addr;
+      nv->len = v.len;
+      nv->prot = v.prot;
+      nv->flags = v.flags;
+      nv->p = np;
+      nv->f = v.f;
+      filedup(nv->f);
+    }
+  }
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -343,6 +366,14 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Close all open vmas
+  for (int i = 0; i < VMASZ; ++i) {
+    if (vmas[i].p && vmas[i].p->pid == p->pid) {
+      fileclose(vmas[i].f);
+      memset(&vmas[i], 0, sizeof(vmas[i]));
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
