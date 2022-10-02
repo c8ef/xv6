@@ -542,6 +542,21 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   return tot;
 }
 
+// store the target path of symbolic link
+// caller must hold the ilock
+int symlinki(char *target, struct inode *ip) {
+  ip->major = ip->minor = 0;
+  if (writei(ip, 0, (uint64)target, 0, strlen(target)) != strlen(target)) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
 // Directories
 
 int

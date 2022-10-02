@@ -283,6 +283,24 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+struct inode *follow_symlink(struct inode *ip, int depth) {
+  char target[MAXPATH];
+  if (depth > 10) {
+    iunlockput(ip);
+    return 0;
+  }
+
+  if (readi(ip, 0, (uint64)target, 0, MAXPATH) < 0) {
+    iunlockput(ip);
+    return 0;
+  }
+  iunlockput(ip);
+  if ((ip = namei(target)) == 0)
+    return 0;
+  ilock(ip);
+  return ip->type == T_SYMLINK ? follow_symlink(ip, depth + 1) : ip;
+}
+
 uint64
 sys_open(void)
 {
@@ -311,6 +329,13 @@ sys_open(void)
     ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
+      end_op();
+      return -1;
+    }
+  }
+
+  if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+    if ((ip = follow_symlink(ip, 0)) == 0) {
       end_op();
       return -1;
     }
@@ -483,4 +508,22 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64 sys_symlink(void) {
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+  begin_op();
+
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  // create already hold the ilock of ip
+  // so dont ilock here again
+  return symlinki(target, ip);
 }
